@@ -21,8 +21,7 @@ jobs:
           - ubuntu-latest
           #- macOS-latest
           - windows-latest
-        arch:
-          - x64
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v2
       - uses: julia-actions/setup-julia@v1
@@ -30,7 +29,7 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - run: julia --project -e 'using Pkg; Pkg.add("PackageCompiler")'
-      - run: julia --project -e 'using PackageCompiler; create_app(pwd(), "PRS.jl-compiled", force=true)'
+      - run: julia --project -e 'using PackageCompiler; create_app(pwd(), "PRS.jl-compiled/PRS.jl-compiled/", force=true)'
       - uses: actions/upload-artifact@v3
         with:
           name: PRS.jl-compiled-${{ matrix.os-version }}-${{ matrix.arch }}
