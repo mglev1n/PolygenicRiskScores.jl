@@ -29,10 +29,8 @@ jobs:
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-      - run: |
-          cd ..
       - run: julia --project -e 'using Pkg; Pkg.add("PackageCompiler")'
-      - run: julia --project -e 'using PackageCompiler; create_app("PolygenicRiskScores.jl", "PRS.jl-compiled", force=true)'
+      - run: julia --project -e 'using PackageCompiler; create_app(pwd(), "PRS.jl-compiled", force=true)'
       - uses: actions/upload-artifact@v3
         with:
           name: PRS.jl-compiled
