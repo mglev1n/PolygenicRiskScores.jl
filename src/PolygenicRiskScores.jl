@@ -49,11 +49,9 @@ settings = ArgParseSettings()
     "--n_iter"
         help = "Number of MCMC iterations to perform"
         arg_type = Int
-        default = 1000
     "--n_burnin"
         help = "Number of MCMC burn-in iterations"
         arg_type = Int
-        default = 500
     "--thin"
         arg_type = Int
         default = 5
@@ -92,6 +90,16 @@ settings = ArgParseSettings()
         default = nothing
 end
 
+function julia_main()::Cint
+    try
+        main()
+    catch
+        Base.invokelatest(Base.display_error, Base.catch_stack())
+        return 1
+    end
+    return 0
+end
+
 function main()
     opts = parse_args(ARGS, settings)
     verbose = !opts["quiet"]
@@ -107,6 +115,7 @@ function main()
     else
         ref_df = parse_ref(joinpath(ref_dir, "snpinfo_mult_1kg_hm3"), chroms; multi=true)
     end
+
     verbose && @info "$(nrow(ref_df)) SNPs in reference file ($(round(now()-t, Dates.Second)))"
 
     bim_prefix = opts["bim_prefix"]
@@ -119,6 +128,7 @@ function main()
         _main(chrom, ref_df, vld_df, opts; verbose=verbose)
     end
 end
+
 function _main(chrom, ref_df, vld_df, opts; verbose=false)
     sst_files = split(opts["sst_file"], ',')
     n_gwass = parse.(Int, split(opts["n_gwas"], ','))
@@ -129,6 +139,19 @@ function _main(chrom, ref_df, vld_df, opts; verbose=false)
         pops = [nothing]
         n_pop = 1
     end
+
+    if opts["n_iter"] === nothing
+        n_iter = n_pop*1000
+    else 
+        n_iter = opts["n_iter"]
+    end
+
+    if opts["n_burnin"] === nothing
+        n_burnin = n_pop*500
+    else 
+        n_burnin = opts["n_burnin"]
+    end
+
     meta = opts["meta"]
 
     sst_dfs = Vector{DataFrame}(undef, length(n_gwass))
@@ -149,14 +172,14 @@ function _main(chrom, ref_df, vld_df, opts; verbose=false)
         verbose && @info "(Chromosome $chrom) (Population $pop) Completed parsing reference LD ($(round(now()-t, Dates.Second)))"
     end
 
-    verbose && @info "(Chromosome $chrom) (Population $pop) Aligning LD blocks"
+    verbose && @info "(Chromosome $chrom) Aligning LD blocks"
     t = now()
     snp_df, beta_vecs, frq_vecs, idx_vecs = align_ldblk(ref_df, vld_df, sst_dfs, length(n_gwass), chrom)
-    verbose && @info "(Chromosome $chrom) (Population $pop) Aligned LD blocks ($(round(now()-t, Dates.Second)))"
+    verbose && @info "(Chromosome $chrom) Aligned LD blocks ($(round(now()-t, Dates.Second)))"
 
     verbose && @info "(Chromosome $chrom) Initiating MCMC"
     t = now()
-    beta_est, extra = mcmc(a=opts["a"], b=opts["b"], phi=opts["phi"], snp_df=snp_df, beta_vecs=beta_vecs, frq_vecs=frq_vecs, idx_vecs=idx_vecs, sst_df=sst_dfs, n=n_gwass, ld_blk=ld_blks, blk_size=blk_sizes, n_iter=opts["n_iter"], n_burnin=opts["n_burnin"], thin=opts["thin"], chrom=chrom, beta_std=opts["beta_std"], meta=meta, seed=opts["seed"], verbose=verbose)
+    beta_est, extra = mcmc(a=opts["a"], b=opts["b"], phi=opts["phi"], snp_df=snp_df, beta_vecs=beta_vecs, frq_vecs=frq_vecs, idx_vecs=idx_vecs, sst_df=sst_dfs, n=n_gwass, ld_blk=ld_blks, blk_size=blk_sizes, n_iter=n_iter, n_burnin=n_burnin, thin=opts["thin"], chrom=chrom, beta_std=opts["beta_std"], meta=meta, seed=opts["seed"], verbose=verbose)
     verbose && @info "(Chromosome $chrom) Completed MCMC ($(round(now()-t, Dates.Second)))"
 
     phi = opts["phi"]
