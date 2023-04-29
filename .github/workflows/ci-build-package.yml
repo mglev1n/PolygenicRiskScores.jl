@@ -32,5 +32,5 @@ jobs:
       - run: julia --project -e 'using PackageCompiler; create_app(pwd(), "PRS.jl-compiled/PRS.jl-compiled/", force=true)'
       - uses: actions/upload-artifact@v3
         with:
-          name: PRS.jl-compiled-${{ matrix.os-version }}-${{ matrix.arch }}
+          name: PRS.jl-compiled-${{ matrix.os }}-${{ matrix.arch }}
           path: PRS.jl-compiled/
