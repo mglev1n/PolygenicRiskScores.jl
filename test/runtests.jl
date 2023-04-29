@@ -122,7 +122,7 @@ end
 end
 @testset "Multi Ancestry" begin
     # Default run
-    test_harness(;multi=true, n_iter=10000, n_burnin=500)
+    test_harness(;multi=true)
 end
 
 # run julia once with seed X
