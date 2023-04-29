@@ -18,7 +18,8 @@ jobs:
         version:
           - '1.8.5'
         os:
-          - ubuntu-latest
+          - ubuntu-20.04
+          #- ubuntu-latest
           #- macOS-latest
           - windows-latest
         arch:
