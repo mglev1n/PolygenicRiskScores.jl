@@ -1,266 +1,216 @@
-function parse_ref(ref_file::String, chroms::UnitRange; multi=false)
-    df = CSV.File(ref_file; types=Dict(:A1=>Char,:A2=>Char)) |> DataFrame
-    df.A1 = tochar.(df.A1)
-    df.A2 = tochar.(df.A2)
-    @assert df.CHR isa Vector{Int}
-    @assert df.BP isa Vector{Int}
-    if multi
-        for pop in ("AFR", "AMR", "EAS", "EUR", "SAS")
-            @assert df[!,"FRQ_"*pop] isa Vector{<:Real}
-            @assert df[!,"FLP_"*pop] isa Vector{<:Real}
-        end
+module PolygenicRiskScores
+
+## CSV parsing
+
+using CSV
+using DataFrames, DataFramesMeta
+using Dates, Distributions, Statistics, Random, LinearAlgebra, Printf
+using HDF5
+
+include("parse_genet.jl")
+include("gigrnd.jl")
+include("mcmc_gtb.jl")
+
+## argument parsing
+
+using ArgParse
+
+settings = ArgParseSettings()
+
+@add_arg_table! settings begin
+    "--ref_dir"
+        help = "Path to the reference panel directory"
+        required = true
+    "--bim_prefix"
+        help = "Directory and prefix of the bim file for the validation set"
+        required = true
+    "--sst_file"
+        help = "Path to summary statistics file"
+        required = true
+    "--sst_missing"
+        help = "Indicator for missing data in sumstats file (eg 'NA')"
+        default = ""
+    "--a"
+        arg_type = Float64
+        default = 1.0
+    "--b"
+        arg_type = Float64
+        default = 0.5
+    "--phi"
+        arg_type = Float64
+    "--n_gwas"
+        help = "Sample size of the GWAS"
+        #arg_type = Int
+        required = true
+    "--pop"
+        help = "Population of the GWAS Sample"
+        required = false
+        default = nothing
+    "--n_iter"
+        help = "Number of MCMC iterations to perform"
+        arg_type = Int
+        default = 1000
+    "--n_burnin"
+        help = "Number of MCMC burn-in iterations"
+        arg_type = Int
+        default = 500
+    "--thin"
+        arg_type = Int
+        default = 5
+    "--out_dir"
+        help = "Output file directory"
+        required = true
+    "--out_header"
+        help = "Write header to output file"
+        action = :store_true
+    "--out_delim"
+        help = "Output file delimiter"
+        default = '\t'
+    "--out_path"
+        help = "Output file path (overrides --out_dir)"
+        default = nothing
+    "--out_name"
+        help = "Output file prefix"
+        default = nothing
+    "--chrom"
+        help = "Chromosomes to process"
+        default = "1:22"
+    "--beta_std"
+        action = :store_true
+    "--meta"
+        help = "If true, return combined SNP effect sizes across populations using an inverse-variance-weighted meta-analysis of the population-specific posterior effect size estimates."
+        default = false
+        arg_type = Bool
+    "--seed"
+        help = "RNG seed for MCMC"
+        arg_type = Int
+    "--quiet"
+        help = "Disable all unnecessary printing"
+        action = :store_true
+    "--hostsfile"
+        help = "Hostsfile to use for parallel processing"
+        default = nothing
+end
+
+function main()
+    opts = parse_args(ARGS, settings)
+    verbose = !opts["quiet"]
+
+    chroms = eval(Meta.parse(opts["chrom"]))
+    verbose && @info "Selecting chromosomes $chroms"
+
+    ref_dir = opts["ref_dir"]
+    verbose && @info "Parsing reference file: $ref_dir/snpinfo_1kg_hm3"
+    t = now()
+    if opts["pop"] === nothing
+        ref_df = parse_ref(joinpath(ref_dir, "snpinfo_1kg_hm3"), chroms)
     else
-        @assert df.MAF isa Vector{T} where T<:Real
+        ref_df = parse_ref(joinpath(ref_dir, "snpinfo_mult_1kg_hm3"), chroms; multi=true)
     end
-    filter!(row->row.CHR in chroms, df)
-    return df
-end
+    verbose && @info "$(nrow(ref_df)) SNPs in reference file ($(round(now()-t, Dates.Second)))"
 
-parse_ref(ref_file::String, chrom::Integer; multi=false) =
-    parse_ref(ref_file, chrom:chrom; multi)
-function tochar(x)::Union{Char,Missing}
-    if x isa String
-        if length(x) == 1
-            return first.(x)
-        else
-            return missing
-        end
+    bim_prefix = opts["bim_prefix"]
+    verbose && @info "Parsing BIM file: $(bim_prefix*".bim")"
+    t = now()
+    vld_df = parse_bim(bim_prefix, chroms)
+    verbose && @info "$(nrow(vld_df)) SNPs in BIM file ($(round(now()-t, Dates.Second)))"
+
+    for chrom in chroms
+        _main(chrom, ref_df, vld_df, opts; verbose=verbose)
+    end
+end
+function _main(chrom, ref_df, vld_df, opts; verbose=false)
+    sst_files = split(opts["sst_file"], ',')
+    n_gwass = parse.(Int, split(opts["n_gwas"], ','))
+    if opts["pop"] != nothing
+        pops = split(opts["pop"], ',')
+        n_pop = length(pops)
     else
-        x
+        pops = [nothing]
+        n_pop = 1
     end
-end
+    meta = opts["meta"]
 
-function parse_bim(bim_file::String, chroms::UnitRange)
-    header = [:CHR, :SNP, :POS, :BP, :A1, :A2]
-    df = CSV.File(bim_file*".bim"; header=header, types=Dict(:A1=>Char,:A2=>Char)) |> DataFrame
-    df.A1 = tochar.(df.A1)
-    df.A2 = tochar.(df.A2)
-    @assert df.CHR isa Vector{Int}
-    filter!(row->row.CHR in chroms, df)
-    return df
-end
-parse_bim(bim_file::String, chrom::Integer) =
-    parse_bim(bim_file, chrom:chrom)
+    sst_dfs = Vector{DataFrame}(undef, length(n_gwass))
+    ld_blks = Vector{Vector{Matrix{Float64}}}(undef, length(n_gwass))
+    blk_sizes = Vector{Vector{Int}}(undef, length(n_gwass))
+    for i in 1:length(n_gwass)
+        sst_file = sst_files[i]
+        pop = pops[i]
+        verbose && @info "(Chromosome $chrom) (Population $pop) Parsing summary statistics file: $sst_file"
+        t = now()
+        sst_df = parse_sumstats(ref_df[ref_df.CHR .== chrom,:], vld_df[vld_df.CHR .== chrom,:], sst_file, n_gwass[i], pop; verbose=verbose, missingstring=opts["sst_missing"])
+        sst_dfs[i] = sst_df
+        verbose && @info "(Chromosome $chrom) (Population $pop) $(nrow(sst_df)) SNPs in summary statistics file ($(round(now()-t, Dates.Second)))"
 
-nuc_map(char::Char) = nuc_map(Val(char))
-nuc_map(::Val{'A'}) = 'T'
-nuc_map(::Val{'T'}) = 'A'
-nuc_map(::Val{'C'}) = 'G'
-nuc_map(::Val{'G'}) = 'C'
-function permute_snps(df)
-    unique(vcat(
-        df[:,[:SNP,:A1,:A2]],
-        DataFrame(SNP=df.SNP,
-                  A1=df.A2,
-                  A2=df.A1),
-        DataFrame(SNP=df.SNP,
-                  A1=nuc_map.(first.(df.A1)),
-                  A2=nuc_map.(first.(df.A2))),
-        DataFrame(SNP=df.SNP,
-                  A1=nuc_map.(first.(df.A2)),
-                  A2=nuc_map.(first.(df.A1)))
-    ))
-end
-function join_snps(ref_df, vld_df, sst_df; verbose=false)
-    # TODO: Be more efficient, don't allocate all this memory
-    vld_snps = vld_df[:,[:SNP,:A1,:A2]]
-    ref_snps = permute_snps(ref_df)
-    sst_snps = permute_snps(sst_df)
-    snps = innerjoin(vld_snps, ref_snps, sst_snps, on=[:SNP,:A1,:A2], makeunique=true)
-    verbose && @info "$(nrow(snps)) common SNPs"
-    return snps
-end
-norm_ppf(x) = quantile(Normal(), x)
-
-function parse_sumstats(ref_df, vld_df, sst_file, n_subj, pop=nothing; verbose=false, missingstring="")
-    sst_df = CSV.File(sst_file; missingstring=missingstring, types=Dict(:A1=>Char,:A2=>Char)) |> DataFrame
-    sst_df.A1 = tochar.(sst_df.A1)
-    sst_df.A2 = tochar.(sst_df.A2)
-    @assert sst_df.BETA isa Vector{T} where T<:Real
-    nucs = Set(['A','C','T','G'])
-    filter!(row->(row.A1 in nucs) && (row.A2 in nucs), sst_df)
-    filter!(row->!(row.P isa Missing) && !(row.BETA isa Missing), sst_df)
-    sst_df.P = convert(Vector{Float64}, sst_df.P)
-    sst_df.BETA = convert(Vector{Float64}, sst_df.BETA)
-
-    frq_col = pop === nothing ? :MAF : Symbol("FRQ_$(uppercase(pop))")
-    flp_col = pop === nothing ? :FLP : Symbol("FLP_$(uppercase(pop))")
-    if pop !== nothing
-        filter!(row->getproperty(row, Symbol("FRQ_$pop")) > 0, ref_df)
+        verbose && @info "(Chromosome $chrom) (Population $pop) Parsing reference LD"
+        t = now()
+        ld_blks[i], blk_sizes[i] = parse_ldblk(opts["ref_dir"], sst_df, chrom, pop)
+        verbose && @info "(Chromosome $chrom) (Population $pop) Completed parsing reference LD ($(round(now()-t, Dates.Second)))"
     end
 
-    snps = join_snps(ref_df, vld_df, sst_df; verbose=verbose)
-    sort!(snps, [:SNP, :A1, :A2])
+    verbose && @info "(Chromosome $chrom) (Population $pop) Aligning LD blocks"
+    t = now()
+    snp_df, beta_vecs, frq_vecs, idx_vecs = align_ldblk(ref_df, vld_df, sst_dfs, length(n_gwass), chrom)
+    verbose && @info "(Chromosome $chrom) (Population $pop) Aligned LD blocks ($(round(now()-t, Dates.Second)))"
 
-    n_sqrt = sqrt(n_subj)
-    sst_eff = Dict{String,Float64}()
-    for row in Tables.namedtupleiterator(sst_df)
-        if hassnp(snps, (row.SNP,row.A1,row.A2)) ||
-           hassnp(snps, (row.SNP,nuc_map.(row.A1),nuc_map.(row.A2)))
-            effect_sign = 1
-        elseif hassnp(snps, (row.SNP,row.A2,row.A1)) ||
-               hassnp(snps, (row.SNP,nuc_map.(row.A2),nuc_map.(row.A1)))
-            effect_sign = -1
-        else
-            continue
-        end
-        if hasproperty(row, :BETA)
-            beta = row.BETA
-        elseif hasproperty(row, :OR)
-            beta = log(row.OR)
-        end
-        p = max(row.P, 1e-323)
-        beta_std = effect_sign*sign(beta)*abs(norm_ppf(p/2))/n_sqrt
-        sst_eff[row.SNP] = beta_std
-    end
-    _sst_df = DataFrame(SNP=String[],CHR=Int[],BP=Int[],BETA=Float64[],A1=Char[],A2=Char[],FRQ=Float64[],FLP=Int[])
-    for (idx,row) in enumerate(Tables.namedtupleiterator(ref_df))
-        haskey(sst_eff, row.SNP) || continue
+    verbose && @info "(Chromosome $chrom) Initiating MCMC"
+    t = now()
+    beta_est, extra = mcmc(a=opts["a"], b=opts["b"], phi=opts["phi"], snp_df=snp_df, beta_vecs=beta_vecs, frq_vecs=frq_vecs, idx_vecs=idx_vecs, sst_df=sst_dfs, n=n_gwass, ld_blk=ld_blks, blk_size=blk_sizes, n_iter=opts["n_iter"], n_burnin=opts["n_burnin"], thin=opts["thin"], chrom=chrom, beta_std=opts["beta_std"], meta=meta, seed=opts["seed"], verbose=verbose)
+    verbose && @info "(Chromosome $chrom) Completed MCMC ($(round(now()-t, Dates.Second)))"
 
-        SNP = row.SNP
-        CHR = row.CHR
-        BP = row.BP
-        BETA = sst_eff[row.SNP]
-        A1,A2 = row.A1,row.A2
-        if hassnp(snps, (SNP,A1,A2))
-            FRQ = getproperty(row, frq_col)
-            FLP = 1
-        elseif hassnp(snps, (SNP,A2,A1))
-            A1, A2 = A2, A1
-            FRQ = 1-getproperty(row, frq_col)
-            FLP = -1
-        elseif hassnp(snps, (SNP,nuc_map(A1),nuc_map(A2)))
-            A1, A2 = nuc_map(A1), nuc_map(A2)
-            FRQ = getproperty(row, frq_col)
-            FLP = 1
-        elseif hassnp(snps, (SNP,nuc_map(A2),nuc_map(A1)))
-            A1, A2 = nuc_map(A2), nuc_map(A1)
-            FRQ = 1-getproperty(row, frq_col)
-            FLP = -1
-        else
-            verbose && @warn "(Chromosome $CHR) Didn't find ($SNP,$A1,$A2) in snps"
-            # FIXME: Skip?
-        end
-        if pop !== nothing
-            FLP = getproperty(row, flp_col)
-        end
-        push!(_sst_df, (SNP=SNP,CHR=CHR,BP=BP,BETA=BETA,A1=A1,A2=A2,FRQ=FRQ,FLP=FLP))
-    end
-    return _sst_df
-end
+    phi = opts["phi"]
+    phi_str = phi === nothing ? "auto" : @sprintf("%1.0e", phi)
 
-function findsnp(snps, (snp,a1,a2))
-    SNP_range = binary_range_search(snps, snp, :SNP)
-    SNP_range === nothing && return nothing
-    SNP_L, SNP_R = SNP_range
-    SNP_sub = snps[SNP_L:SNP_R,:]
-
-    A1_range = binary_range_search(SNP_sub, a1, :A1)
-    A1_range === nothing && return nothing
-    A1_L, A1_R = A1_range
-    A1_sub = SNP_sub[A1_L:A1_R,:]
-
-    A2_range = binary_range_search(A1_sub, a2, :A2)
-    A2_range === nothing && return nothing
-    A2_L, A2_R = A2_range
-    @assert A2_L == A2_R
-    return SNP_L + (A1_L-1) + (A2_L-1)
-end
-hassnp(snps, row) = findsnp(snps, row) !== nothing
-# TODO: Allow warm-restarts
-function binary_range_search(snps, x, col)
-    _snps = snps[!,col]
-    L = 1
-    R = nrow(snps)
-    while true
-        (L > R) && return nothing
-        M = floor(Int, (L+R)/2)
-        _x = _snps[M]
-        if _x == x
-            L,R = M,M
-            snps_rows = nrow(snps)
-            while (L > 1) && (_snps[L - 1] == x)
-                L -= 1
-            end
-            while R < (snps_rows) && (_snps[R + 1] == x)
-                R += 1
-            end
-            return L,R
-        elseif _x < x
-            L = M+1
-        elseif _x > x
-            R = M-1
-        end
-    end
-end
-
-function parse_ldblk(ldblk_dir, sst_df, chrom, pop=nothing)
-    chr_name = if pop === nothing
-        joinpath(ldblk_dir, "ldblk_1kg_chr" * string(chrom) * ".hdf5")
-    else
-        joinpath(ldblk_dir, "ldblk_1kg_" * pop, "ldblk_1kg_chr" * string(chrom) * ".hdf5")
-    end
-    hdf_chr = h5open(chr_name, "r")
-    n_blk = length(hdf_chr)
-    ld_blk = [read(hdf_chr["blk_"*string(blk)]["ldblk"]) for blk in 1:n_blk]
-
-    snp_blk = Vector{String}[]
-    for blk in 1:n_blk
-        push!(snp_blk, read(hdf_chr["blk_"*string(blk)]["snplist"]))
-    end
-
-    blk_size = Int[]
-    _ld_blk = Matrix{Float64}[]
-    mm = 1
-    for blk in 1:n_blk
-        idx = [(ii,findfirst(s->s==snp, sst_df.SNP)) for (ii, snp) in enumerate(snp_blk[blk]) if snp in sst_df.SNP]
-        push!(blk_size, length(idx))
-        if !isempty(idx)
-            idx_blk = mm:(mm+length(snp_blk[blk])-1)
-            flip = [sst_df.FLP[jj] for jj in last.(idx)]
-            flipM = flip' .* flip
-            _blk = Matrix{Float64}(undef, length(idx), length(idx))
-            P = collect(Iterators.product(first.(idx),first.(idx)))
-            for icol in 1:size(P,2)
-                for irow in 1:size(P,1)
-                    row,col = P[irow,icol]
-                    _blk[irow,icol] = ld_blk[blk][row,col] * flipM[irow,icol]
-                end
-            end
-            push!(_ld_blk, _blk)
-            mm += length(snp_blk[blk])
-        else
-            push!(_ld_blk,  Matrix{Float64}(undef, 0, 0))
-        end
-    end
-
-    return _ld_blk, blk_size
-end
-
-function align_ldblk(ref_df, vld_df, sst_dfs, n_pop, chrom)
-    snp_df = DataFrame(CHR=Int[], SNP=String[], BP=Int[], A1=Char[], A2=Char[])
-    for (ii,snp) in enumerate(ref_df.SNP)
-        for pp in 1:n_pop
-            if snp in sst_dfs[pp].SNP
-                CHR = ref_df.CHR[ii]
-                BP = ref_df.BP[ii]
-                vld_ii = findfirst(x -> x == snp, vld_df.SNP)
-                A1 = vld_df.A1[vld_ii]
-                A2 = vld_df.A2[vld_ii]
-                push!(snp_df, (;CHR=CHR,BP=BP,A1=A1,A2=A2,SNP=snp))
-                break
-            end
-        end
-    end
-
-    beta_vecs = Vector{Vector{Float64}}(undef, n_pop)
-    frq_vecs = Vector{Vector{Float64}}(undef, n_pop)
-    idx_vecs = Vector{Vector{Int}}(undef, n_pop)
     for pp in 1:n_pop
-        beta_vecs[pp] = sst_dfs[pp].BETA
-        frq_vecs[pp] = sst_dfs[pp].FRQ
-        idx_vecs[pp] = [ii for (ii,snp) in enumerate(snp_df.SNP) if snp in sst_dfs[pp].SNP]
+        pop = pops[pp]
+        verbose && @info "(Chromosome $chrom) (Population $pop) Writing posterior effect sizes"
+        t = now()
+
+        pop_str = n_pop == 1 ? "" : (pops[pp] * "_")
+        eff_file = if opts["out_path"] === nothing
+            out_prefix = opts["out_name"] !== nothing ? (opts["out_name"] * "_") : ""
+            if !isdir(opts["out_dir"])
+                @warn "--out_dir does not exist; creating it at $(opts["out_dir"])\nNote: The old behavior of treating --out_dir as a prefix has been removed"
+                mkdir(opts["out_dir"])
+            end
+            joinpath(opts["out_dir"], @sprintf("%s%spst_eff_a%d_b%.1f_phi%s_chr%d.txt", out_prefix, pop_str, opts["a"], opts["b"], phi_str, chrom))
+        else
+            @warn "Prefixing output file with $pop_str"
+            joinpath(dirname(opts["out_path"]), pop_str * basename(opts["out_path"]))
+        end
+
+        out_df = snp_df[idx_vecs[pp], [:SNP, :BP, :A1, :A2]]
+        out_df[!, :CHR] .= chrom
+        out_df.BETA = map(b->@sprintf("%.6e", b), beta_est[pp])
+        out_df = select(out_df, [:CHR, :SNP, :BP, :A1, :A2, :BETA])
+        CSV.write(eff_file, out_df; header=opts["out_header"], delim=opts["out_delim"])
+        verbose && @info "(Chromosome $chrom) (Population $pop) Finished writing posterior effect sizes ($(round(now()-t, Dates.Second)))"
     end
 
-    return snp_df, beta_vecs, frq_vecs, idx_vecs
+    if meta
+        verbose && @info "(Chromosome $chrom) Writing meta posterior effect sizes"
+        t = now()
+        meta_eff_file = if opts["out_path"] === nothing
+            joinpath(opts["out_dir"], @sprintf("_META_pst_eff_a%d_b%.1f_phi%s_chr%d.txt", opts["a"], opts["b"], phi_str, chrom))
+        else
+            @warn "Prefixing meta output file with META_"
+            joinpath(dirname(opts["out_path"]), "META_" * basename(opts["out_path"]))
+        end
+
+        mu = extra.mu
+        @assert mu !== nothing
+        meta_out_df = snp_df[:, [:SNP, :BP, :A1, :A2]]
+        meta_out_df[!, :CHR] .= chrom
+        meta_out_df.BETA = map(b->@sprintf("%.6e", b), mu)
+        meta_out_df = select(meta_out_df, [:CHR, :SNP, :BP, :A1, :A2, :BETA])
+        CSV.write(meta_eff_file, meta_out_df; header=opts["out_header"], delim=opts["out_delim"])
+        verbose && @info "(Chromosome $chrom) Finished writing meta posterior effect sizes ($(round(now()-t, Dates.Second)))"
+    end
+
+    if opts["phi"] === nothing && verbose
+        @info @sprintf("Estimated global shrinkage parameter: %1.2e", extra.phi_est)
+    end
 end
+
+end # module
