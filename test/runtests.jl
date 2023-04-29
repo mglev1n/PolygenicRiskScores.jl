@@ -21,7 +21,7 @@ cd(PRS_DATA_PATH) do
         run(`tar xf ldblk_1kg_eur.tar.gz`)
     end
     if !isdir("ldblk_1kg_eas")
-        run(`wget -q https://www.dropbox.com/s/mt6var0z96vb6fv/ldblk_1kg_eas.tar.gz`)
+        run(`wget -q https://www.dropbox.com/s/7ek4lwwf2b7f749/ldblk_1kg_eas.tar.gz`) 
         run(`tar xf ldblk_1kg_eas.tar.gz`)
     end
 end
