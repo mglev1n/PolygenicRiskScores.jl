@@ -20,7 +20,7 @@ jobs:
         os:
           - ubuntu-latest
           #- macOS-latest
-          #- windows-latest
+          - windows-latest
         arch:
           - x64
     steps:
@@ -33,5 +33,5 @@ jobs:
       - run: julia --project -e 'using PackageCompiler; create_app(pwd(), "PRS.jl-compiled", force=true)'
       - uses: actions/upload-artifact@v3
         with:
-          name: PRS.jl-compiled
+          name: PRS.jl-compiled-${{ matrix.os-version }}-${{ matrix.arch }}
           path: PRS.jl-compiled/
