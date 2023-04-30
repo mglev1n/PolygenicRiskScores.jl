@@ -36,7 +36,6 @@ function test_harness(;a=1,b=0.5,phi=1e-02,chr=22,out_header=false,multi=false,m
     b = repr(b)
     phi = @sprintf("%1.0e", phi)
     chr = repr(chr)
-    n_iter = repr(n_iter)
     bim_prefix = multi ? "multi_test" : "test"
 
     cmd_jl = `julia --project -e "using PolygenicRiskScores; PolygenicRiskScores.main()" -- --bim_prefix=$PRS_DATA_PATH/$bim_prefix --chrom=$chr --phi=$phi --out_dir=$PRS_DATA_PATH/output_jl`
