@@ -31,7 +31,7 @@ end
 #Script runs using specified fi
 #Script successfully saves results using out_path and with out_dir
 
-function test_harness(;a=1,b=0.5,phi=1e-02,chr=22,n_iter=1000,n_burnin=500,out_header=false,multi=false,meta=false,out_name="")
+function test_harness(;a=1,b=0.5,phi=1e-02,chr=22,out_header=false,multi=false,meta=false,out_name="")
     a = repr(a)
     b = repr(b)
     phi = @sprintf("%1.0e", phi)
