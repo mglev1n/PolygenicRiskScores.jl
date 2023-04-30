@@ -39,9 +39,9 @@ function test_harness(;a=1,b=0.5,phi=1e-02,chr=22,out_header=false,multi=false,m
     n_iter = repr(n_iter)
     bim_prefix = multi ? "multi_test" : "test"
 
-    cmd_jl = `julia --project -e "using PolygenicRiskScores; PolygenicRiskScores.main()" -- --bim_prefix=$PRS_DATA_PATH/$bim_prefix --chrom=$chr --phi=$phi --n_iter=$n_iter --n_burnin=$n_burnin --out_dir=$PRS_DATA_PATH/output_jl`
+    cmd_jl = `julia --project -e "using PolygenicRiskScores; PolygenicRiskScores.main()" -- --bim_prefix=$PRS_DATA_PATH/$bim_prefix --chrom=$chr --phi=$phi --out_dir=$PRS_DATA_PATH/output_jl`
     py_pkg = multi ? "PRScsx" : "PRScs"
-    cmd_py = `python3 $PRS_DATA_PATH/$py_pkg/$py_pkg.py --bim_prefix=$PRS_DATA_PATH/$bim_prefix --chrom=$chr --phi=$phi --n_iter=$n_iter --n_burnin=$n_burnin --out_dir=$PRS_DATA_PATH/output_py`
+    cmd_py = `python3 $PRS_DATA_PATH/$py_pkg/$py_pkg.py --bim_prefix=$PRS_DATA_PATH/$bim_prefix --chrom=$chr --phi=$phi --out_dir=$PRS_DATA_PATH/output_py`
 
     for (kind, cmd) in ((:jl, cmd_jl), (:py, cmd_py))
         if out_header && kind == :jl
