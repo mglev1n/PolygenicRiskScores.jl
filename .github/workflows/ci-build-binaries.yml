@@ -1,4 +1,4 @@
-name: Build Package (Julia 1.8.5)
+name: Build Binaries (Julia 1.8.5)
 on:
   push:
     branches:
