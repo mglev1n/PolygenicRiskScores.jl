@@ -34,6 +34,12 @@ function test_harness(;a=1,b=0.5,phi=1e-02,chr=22,niter=1000,out_header=false)
         push!(cmd_jl.exec, "--out_header")
     end
     run(cmd_jl)
+    
+    cmd_jl_nobounds = `julia --check-bounds=no --project -e "using PolygenicRiskScores; PolygenicRiskScores.main()" -- --ref_dir=$PRS_DATA_PATH/ldblk_1kg_eur --bim_prefix=$PRS_DATA_PATH/test --sst_file=$PRS_DATA_PATH/sumstats.txt --n_gwas=200000 --chrom=$chr --phi=$phi --n_iter=$niter --out_dir=$PRS_DATA_PATH/output_jl_nobounds`
+    if out_header
+        push!(cmd_jl.exec, "--out_header")
+    end
+    run(cmd_jl_nobounds)
 
     run(`python3 $PRS_DATA_PATH/PRScs/PRScs.py --ref_dir=$PRS_DATA_PATH/ldblk_1kg_eur --bim_prefix=$PRS_DATA_PATH/test --sst_file=$PRS_DATA_PATH/sumstats.txt --n_gwas=200000 --chrom=$chr --phi=$phi --n_iter=$niter --out_dir=$PRS_DATA_PATH/output_py`)
 
