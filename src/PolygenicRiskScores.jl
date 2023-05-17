@@ -141,13 +141,13 @@ function _main(chrom, ref_df, vld_df, opts; verbose=false)
     end
 
     if opts["n_iter"] === nothing
-        n_iter = n_pop*1000
+        n_iter = n_pop*1000/2
     else 
         n_iter = opts["n_iter"]
     end
 
     if opts["n_burnin"] === nothing
-        n_burnin = n_pop*500
+        n_burnin = n_pop*500/2
     else 
         n_burnin = opts["n_burnin"]
     end
