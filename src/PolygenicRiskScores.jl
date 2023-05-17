@@ -132,7 +132,7 @@ end
 function _main(chrom, ref_df, vld_df, opts; verbose=false)
     sst_files = split(opts["sst_file"], ',')
     n_gwass = parse.(Int, split(opts["n_gwas"], ','))
-    if opts["pop"] !== nothing
+    if opts["pop"] != nothing
         pops = split(opts["pop"], ',')
         n_pop = length(pops)
     else
@@ -157,7 +157,7 @@ function _main(chrom, ref_df, vld_df, opts; verbose=false)
     sst_dfs = Vector{DataFrame}(undef, length(n_gwass))
     ld_blks = Vector{Vector{Matrix{Float64}}}(undef, length(n_gwass))
     blk_sizes = Vector{Vector{Int}}(undef, length(n_gwass))
-    for i in 1:eachindex(n_gwass)
+    for i in 1:length(n_gwass)
         sst_file = sst_files[i]
         pop = pops[i]
         verbose && @info "(Chromosome $chrom) (Population $pop) Parsing summary statistics file: $sst_file"
