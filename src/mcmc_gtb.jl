@@ -48,7 +48,7 @@ function mcmc(; a, b, phi, snp_df, beta_vecs, frq_vecs, idx_vecs, sst_df, n, ld_
             verbose && @info "(Chromosome $chrom) MCMC iteration $itr"
         end
 
-        for pp in 1:n_pop
+        @turbo for pp in 1:n_pop
             mm = 1; quad = 0.0
             psi_pp = psi[idx_vecs[pp]]
             for kk in 1:n_blk[pp]
@@ -75,11 +75,11 @@ function mcmc(; a, b, phi, snp_df, beta_vecs, frq_vecs, idx_vecs, sst_df, n, ld_
         delta = rand.(Gamma.(a+b, 1.0 ./ (psi .+ phi)))
 
         xx = zeros(p_tot)
-        for pp in 1:n_pop
+        @turbo for pp in 1:n_pop
             xx[idx_vecs[pp]] .+= n[pp] .* beta[pp] .^ 2 ./ sigma[pp]
         end
 
-        for jj in 1:p_tot
+        @turbo for jj in 1:p_tot
             while true
                 try
                     psi[jj] = gigrnd(a-0.5*n_grp[jj], 2.0*delta[jj], xx[jj])
@@ -99,7 +99,7 @@ function mcmc(; a, b, phi, snp_df, beta_vecs, frq_vecs, idx_vecs, sst_df, n, ld_
 
         # posterior
         if (itr>n_burnin) && (itr % thin == 0)
-            for pp in 1:n_pop
+            @turbo for pp in 1:n_pop
                 beta_est[pp] = beta_est[pp] + beta[pp] ./ n_pst
                 beta_sq_est[pp] = beta_sq_est[pp] + beta[pp] .^ 2 ./ n_pst
                 sigma_est[pp] = sigma_est[pp] + sigma[pp] ./ n_pst
@@ -111,7 +111,7 @@ function mcmc(; a, b, phi, snp_df, beta_vecs, frq_vecs, idx_vecs, sst_df, n, ld_
 
     # convert standardized beta to per-allele beta
     if !beta_std
-        for pp in 1:n_pop
+        @turbo for pp in 1:n_pop
             beta_est[pp] ./= het[pp]
             beta_sq_est[pp] ./= het[pp] .^ 2
         end
@@ -120,7 +120,7 @@ function mcmc(; a, b, phi, snp_df, beta_vecs, frq_vecs, idx_vecs, sst_df, n, ld_
     if meta
         vv = zeros(p_tot)
         zz = zeros(p_tot)
-        for pp in 1:n_pop
+        @turbo for pp in 1:n_pop
             vv[idx_vecs[pp]] .+= 1.0 ./ (beta_sq_est[pp] .- beta_est[pp] .^ 2)
             zz[idx_vecs[pp]] .+= 1.0 ./ (beta_sq_est[pp] .- beta_est[pp] .^ 2) .* beta_est[pp]
         end
